@@ -1,151 +1,154 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import os
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from tensorflow.keras.models import load_model
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+import joblib
+import streamlit as st
 
-def ensure_data_files():
-    os.makedirs("data", exist_ok=True)
+# --- Compute Dynamic Seasonality Score ---
+def compute_seasonality_score(vdf):
+    month_counts = vdf['Date'].dt.month.value_counts(normalize=True)
+    current_month = pd.Timestamp.today().month
+    return month_counts.get(current_month, 0.0)
 
-    if not os.path.exists("data/user_preferences.csv"):
-        with open("data/user_preferences.csv", "w") as f:
-            f.write("Week,User,Vegetable,Preference\n")
+# --- Compute Dynamic Health Score Placeholder ---
+def compute_health_score(veg):
+    # Placeholder for future real nutrient-based score
+    return 0.5
 
-    if not os.path.exists("data/family_purchases.csv"):
-        with open("data/family_purchases.csv", "w") as f:
-            f.write("Date,Vegetable,Quantity(kg),Leftover(kg)\n")
+# --- Training Function ---
+def train_lstm_models():
+    st.info("Retraining models. Please wait...")
+    purchases_url = "https://docs.google.com/spreadsheets/d/1wdKR-b_kC79OQHFl3uat4fW6zfsjIS3Mn0M6x0J6Pgw/gviz/tq?tqx=out:csv&sheet=family_purchases"
+    prefs_url = "https://docs.google.com/spreadsheets/d/1wdKR-b_kC79OQHFl3uat4fW6zfsjIS3Mn0M6x0J6Pgw/gviz/tq?tqx=out:csv&sheet=user_preferences"
+    df = pd.read_csv(purchases_url)
+    pref_df = pd.read_csv(prefs_url)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df['Week'] = df['Date'].dt.isocalendar().week
+    df['Year'] = df['Date'].dt.year
 
-ensure_data_files()
+    sequence_length = 4
+    os.makedirs("models", exist_ok=True)
 
+    for veg in df['Vegetable'].unique():
+        vdf = df[df['Vegetable'] == veg].copy()
+        vdf = vdf.sort_values("Date")
+        vdf['WeekIndex'] = (vdf['Year'] - vdf['Year'].min()) * 52 + vdf['Week']
+        vdf = vdf.groupby('WeekIndex').agg({
+            'Quantity(kg)': 'sum',
+            'Leftover(kg)': 'mean'
+        }).reset_index()
+        vdf['WeekNum'] = vdf['WeekIndex'] % 52
 
-st.set_page_config("Family Veg Recommender", layout="centered")
+        preference = pref_df[pref_df['Vegetable'] == veg]['Preference'].mean() if veg in pref_df['Vegetable'].values else 0.5
+        season_score = compute_seasonality_score(df[df['Vegetable'] == veg])
+        health_score = compute_health_score(veg)
 
-# --- Load and Save Functions ---
-@st.cache_data
-def load_preferences():
-    return pd.read_csv("data/user_preferences.csv")
+        vdf['Preference'] = preference
+        vdf['Seasonality'] = season_score
+        vdf['Health'] = health_score
 
-@st.cache_data
-def load_purchases():
-    return pd.read_csv("data/family_purchases.csv", parse_dates=["Date"])
+        features = vdf[['Quantity(kg)', 'Leftover(kg)', 'WeekNum', 'Preference', 'Seasonality', 'Health']].values
+        if len(features) <= sequence_length:
+            continue
 
-def save_preferences(df):
-    df.to_csv("data/user_preferences.csv", index=False)
+        scaler = MinMaxScaler()
+        features_scaled = scaler.fit_transform(features)
 
-def save_purchases(df):
-    df.to_csv("data/family_purchases.csv", index=False)
+        X, y = [], []
+        for i in range(sequence_length, len(features_scaled)):
+            X.append(features_scaled[i-sequence_length:i])
+            y.append(features_scaled[i][0])
 
-# --- Initialize State ---
-if "pref_df" not in st.session_state:
-    st.session_state.pref_df = load_preferences()
+        X, y = np.array(X), np.array(y)
 
-if "purchase_df" not in st.session_state:
-    st.session_state.purchase_df = load_purchases()
+        model = Sequential()
+        model.add(LSTM(32, activation='relu', input_shape=(sequence_length, X.shape[2])))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mse')
+        model.fit(X, y, epochs=20, verbose=0)
 
-st.title("🥦 Weekly Family Vegetable Recommender")
+        model_path = f"models/model_{veg.replace(' ', '_')}.h5"
+        scaler_path = f"models/scaler_{veg.replace(' ', '_')}.pkl"
+        model.save(model_path)
+        joblib.dump(scaler, scaler_path)
 
-# --- Preferences View ---
-st.subheader("👨‍👩‍👧 User Preferences (View Only)")
-st.dataframe(st.session_state.pref_df)
+    st.success("Model retraining complete.")
 
-st.subheader("➕ Add New Preference Entry")
-with st.form("add_pref"):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        week = st.number_input("Week", min_value=1, value=int(st.session_state.pref_df['Week'].max()) + 1 if not st.session_state.pref_df.empty else 1)
-    with col2:
-        user = st.selectbox("User", ["Mom", "Dad", "Kid"])
-    with col3:
-        veg = st.text_input("Vegetable")
-    with col4:
-        score = st.slider("Preference (1–5)", 1, 5, 3)
+# --- Load LSTM Predictions ---
+def get_lstm_predictions():
+    purchases_url = "https://docs.google.com/spreadsheets/d/1wdKR-b_kC79OQHFl3uat4fW6zfsjIS3Mn0M6x0J6Pgw/gviz/tq?tqx=out:csv&sheet=family_purchases"
+    season_url = "https://docs.google.com/spreadsheets/d/1wdKR-b_kC79OQHFl3uat4fW6zfsjIS3Mn0M6x0J6Pgw/gviz/tq?tqx=out:csv&sheet=seasonality_data"
+    df = pd.read_csv(purchases_url)
+    season_df = pd.read_csv(season_url)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df['Week'] = df['Date'].dt.isocalendar().week
+    df['Year'] = df['Date'].dt.year
 
-    submitted = st.form_submit_button("Add Preference")
-    if submitted and veg.strip():
-        new_row = pd.DataFrame([[week, user, veg, score]], columns=st.session_state.pref_df.columns)
-        st.session_state.pref_df = pd.concat([st.session_state.pref_df, new_row], ignore_index=True)
-        save_preferences(st.session_state.pref_df)
-        st.success(f"✅ Added: {veg} rated {score} by {user}")
+    sequence_length = 4
+    predictions = {}
 
-# --- Purchase History (Grouped by Date) ---
-st.subheader("🧺 Family Purchases by Date")
-grouped = st.session_state.purchase_df.groupby("Date")
-for date, group in grouped:
-    try:
-        label = date.strftime("%Y-%m-%d")
-    except Exception:
-        label = str(date)
-    with st.expander(f"📅 {label}", expanded=False):
-        st.dataframe(group.reset_index(drop=True)[["Vegetable", "Quantity(kg)", "Leftover(kg)"]])
+    for veg in df['Vegetable'].unique():
+        model_path = f"models/model_{veg.replace(' ', '_')}.h5"
+        scaler_path = f"models/scaler_{veg.replace(' ', '_')}.pkl"
 
-# --- Add Purchase ---
-st.subheader("➕ Add New Family Purchase")
-with st.form("add_purchase"):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        date = st.date_input("Purchase Date", pd.to_datetime("today"))
-    with col2:
-        veg = st.text_input("Vegetable Name")
-    with col3:
-        qty = st.number_input("Quantity Purchased (kg)", min_value=0.1, step=0.1)
-    with col4:
-        left = st.number_input("Leftover (kg)", min_value=0.0, step=0.1)
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            continue
 
-    submitted = st.form_submit_button("Add Purchase")
-    if submitted and veg.strip():
-        new_row = pd.DataFrame([[date, veg, qty, left]], columns=["Date", "Vegetable", "Quantity(kg)", "Leftover(kg)"])
-        st.session_state.purchase_df = pd.concat([st.session_state.purchase_df, new_row], ignore_index=True)
-        save_purchases(st.session_state.purchase_df)
-        st.success(f"✅ Added: {veg} - Qty: {qty}kg, Leftover: {left}kg")
+        model = load_model(model_path)
+        scaler = joblib.load(scaler_path)
 
-# --- Collaborative Filtering Prediction ---
-pivot_df = st.session_state.pref_df.pivot_table(index="User", columns="Vegetable", values="Preference", aggfunc="mean")
-pivot_filled = pivot_df.fillna(0)
-user_sim = cosine_similarity(pivot_filled)
-user_sim_df = pd.DataFrame(user_sim, index=pivot_filled.index, columns=pivot_filled.index)
+        vdf = df[df['Vegetable'] == veg].copy()
+        vdf = vdf.sort_values("Date")
+        vdf['WeekIndex'] = (vdf['Year'] - vdf['Year'].min()) * 52 + vdf['Week']
+        vdf = vdf.groupby('WeekIndex').agg({
+            'Quantity(kg)': 'sum',
+            'Leftover(kg)': 'mean'
+        }).reset_index()
+        vdf['WeekNum'] = vdf['WeekIndex'] % 52
 
-def predict(user, veg):
-    if veg not in pivot_df.columns:
-        return None
-    if not np.isnan(pivot_df.get(veg, pd.Series()).get(user, np.nan)):
-        return pivot_df.at[user, veg]
-    sims = user_sim_df[user].drop(user)
-    item_ratings = pivot_df.get(veg, pd.Series()).drop(user)
-    weighted = sum(sims[i] * item_ratings[i] for i in item_ratings.index if not np.isnan(item_ratings[i]))
-    sim_sum = sum(sims[i] for i in item_ratings.index if not np.isnan(item_ratings[i]))
-    return round(weighted / sim_sum, 2) if sim_sum else None
+        preference = 0.5
+        season_score = compute_seasonality_score(df[df['Vegetable'] == veg])
+        health_score = compute_health_score(veg)
 
-# --- Build Recommendations ---
-pref_vegs = set(st.session_state.pref_df["Vegetable"].dropna())
-purchase_vegs = set(st.session_state.purchase_df["Vegetable"].dropna())
-all_vegs = sorted(pref_vegs.union(purchase_vegs))
+        vdf['Preference'] = preference
+        vdf['Seasonality'] = season_score
+        vdf['Health'] = health_score
 
-predictions = []
+        recent = vdf.tail(sequence_length)[['Quantity(kg)', 'Leftover(kg)', 'WeekNum', 'Preference', 'Seasonality', 'Health']].values
+        if len(recent) < sequence_length:
+            continue
 
-for veg in all_vegs:
-    scores = []
-    for user in pivot_df.index:
-        score = predict(user, veg)
-        if score is not None:
-            scores.append(score)
+        recent_scaled = scaler.transform(recent)
+        input_seq = recent_scaled.reshape((1, sequence_length, recent.shape[1]))
 
-    leftover_row = st.session_state.purchase_df[st.session_state.purchase_df["Vegetable"] == veg]
-    avg_left = leftover_row["Leftover(kg)"].mean() if not leftover_row.empty else 0
-    penalty = avg_left * 2
+        pred_scaled = model.predict(input_seq, verbose=0)
+        inverse = scaler.inverse_transform(
+            np.concatenate([pred_scaled, np.zeros((1, recent.shape[1]-1))], axis=1)
+        )
 
-    if scores:
-        avg_pref = np.mean(scores)
-    else:
-        avg_used = leftover_row["Quantity(kg)"].mean() - avg_left if not leftover_row.empty else 0
-        avg_pref = 2 + (avg_used * 1.5)
-        avg_pref = min(5, round(avg_pref, 2))
+        predicted_qty = round(float(inverse[0][0]), 2)
+        predictions[veg] = predicted_qty
 
-    final_score = avg_pref - penalty
-    predictions.append((veg, round(avg_pref, 2), round(avg_left, 2), round(final_score, 2)))
+    result_df = pd.DataFrame(predictions.items(), columns=["Vegetable", "Predicted Quantity (kg)"])
+    type_df = pd.read_csv(season_url)[["Vegetable", "Type"]].drop_duplicates()
+    result_df = result_df.merge(type_df, on="Vegetable", how="left")
+    result_df = result_df.sort_values(["Type", "Predicted Quantity (kg)"], ascending=[True, False])
+    return result_df
 
-# --- Show Final Recommendations ---
-st.subheader("📦 Weekly Family Shopping Recommendations")
-top_n = st.slider("Top N vegetables to recommend", 1, 20, 5)
-df_rec = pd.DataFrame(predictions, columns=["Vegetable", "AvgPref", "AvgLeftover", "FinalScore"])
-df_rec = df_rec.sort_values("FinalScore", ascending=False).head(top_n)
-st.dataframe(df_rec)
+# --- Streamlit UI ---
+if __name__ == "__main__":
+    st.set_page_config(page_title="Vegetable Recommender", layout="wide")
+    st.title("🥦 Family Food Recommendation System")
+
+    st.markdown("LSTM predicts quantity (kg) to buy for the coming week using preferences, recency, seasonality & health signals.")
+
+    if st.button("🔄 Retrain LSTM Models"):
+        train_lstm_models()
+
+    pred_df = get_lstm_predictions()
+    st.dataframe(pred_df, use_container_width=True)
