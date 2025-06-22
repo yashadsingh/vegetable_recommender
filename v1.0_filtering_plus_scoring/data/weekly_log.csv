@@ -1,8 +1,0 @@
-Week,Vegetable,Quantity(kg),Price_per_kg,Seasonal,Preferred,Leftover(kg)
-1,Tomato,1.5,25,Yes,Yes,0
-1,Brinjal,1,30,Yes,No,1
-2,Potato,2,20,Yes,Yes,0
-2,Cabbage,1,18,Yes,Yes,0
-3,Onion,1.2,22,Yes,Yes,0.2
-3,Spinach,0.5,15,Yes,Yes,0
-3,Carrot,0.8,20,Yes,Yes,0
