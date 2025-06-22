@@ -2,6 +2,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+import os
+
+def ensure_data_files():
+    os.makedirs("data", exist_ok=True)
+
+    if not os.path.exists("data/user_preferences.csv"):
+        with open("data/user_preferences.csv", "w") as f:
+            f.write("Week,User,Vegetable,Preference\n")
+
+    if not os.path.exists("data/family_purchases.csv"):
+        with open("data/family_purchases.csv", "w") as f:
+            f.write("Date,Vegetable,Quantity(kg),Leftover(kg)\n")
+
+ensure_data_files()
+
 
 st.set_page_config("Family Veg Recommender", layout="centered")
 
