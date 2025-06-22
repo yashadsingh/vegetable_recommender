@@ -23,17 +23,17 @@ st.set_page_config("Family Veg Recommender", layout="centered")
 # --- Load and Save Functions ---
 @st.cache_data
 def load_preferences():
-    return pd.read_csv("~/data/user_preferences.csv")
+    return pd.read_csv("data/user_preferences.csv")
 
 @st.cache_data
 def load_purchases():
-    return pd.read_csv("~/data/family_purchases.csv", parse_dates=["Date"])
+    return pd.read_csv("data/family_purchases.csv", parse_dates=["Date"])
 
 def save_preferences(df):
-    df.to_csv("~/data/user_preferences.csv", index=False)
+    df.to_csv("data/user_preferences.csv", index=False)
 
 def save_purchases(df):
-    df.to_csv("~/data/family_purchases.csv", index=False)
+    df.to_csv("data/family_purchases.csv", index=False)
 
 # --- Initialize State ---
 if "pref_df" not in st.session_state:
